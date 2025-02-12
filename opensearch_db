@@ -1,0 +1,25 @@
+# Define an index for storing vector embeddings
+index_name = "pdf_vectors"
+
+index_mapping = {
+    "settings": {
+        "index": {
+            "number_of_shards": 1,
+            "number_of_replicas": 0,
+        }
+    },
+    "mappings": {
+        "properties": {
+            "content_vector": {"type": "dense_vector", "dims": 768},  # Adjust based on embedding model
+            "text": {"type": "text"},
+            "metadata": {"type": "object"}
+        }
+    }
+}
+
+# Create index if it doesn't exist
+if not client.indices.exists(index=index_name):
+    client.indices.create(index=index_name, body=index_mapping)
+    print(f"Index '{index_name}' created.")
+else:
+    print(f"Index '{index_name}' already exists.")
