@@ -1,0 +1,125 @@
+import pandas as pd
+import numpy as np
+import time
+from scipy.stats import ks_2samp
+from langchain.llms import Groq
+from langchain.prompts import PromptTemplate
+
+# Initialize LLM with Groq
+llm = Groq(model="llama3-70b-8192", api_key="YOUR_GROQ_API_KEY")  # Replace with actual API key
+
+# Function to profile data
+def profile_data(df):
+    """
+    Generate a profile summary for a given DataFrame.
+    """
+    profile = {}
+    
+    for col in df.columns:
+        if df[col].dtype in ['int64', 'float64']:
+            profile[col] = {
+                "type": "numeric",
+                "mean": df[col].mean(),
+                "std": df[col].std(),
+                "min": df[col].min(),
+                "max": df[col].max(),
+                "median": df[col].median(),
+                "ks_stat": None  
+            }
+        else:
+            profile[col] = {
+                "type": "categorical",
+                "unique_values": df[col].nunique(),
+                "top_5_categories": df[col].value_counts(normalize=True).head(5).to_dict()
+            }
+    
+    return profile
+
+# Function to compare profiles and detect drift
+def compare_profiles(input_profile, synthetic_profile, input_df, synthetic_df):
+    drift_summary = {}
+    
+    for col in input_profile:
+        if input_profile[col]['type'] == "numeric":
+            ks_stat, p_value = ks_2samp(input_df[col].dropna(), synthetic_df[col].dropna())
+            drift_summary[col] = {
+                "type": "numeric",
+                "mean_diff": abs(input_profile[col]["mean"] - synthetic_profile[col]["mean"]),
+                "std_diff": abs(input_profile[col]["std"] - synthetic_profile[col]["std"]),
+                "ks_stat": ks_stat,
+                "p_value": p_value,
+                "drift_detected": p_value < 0.05  
+            }
+        else:
+            drift_summary[col] = {
+                "type": "categorical",
+                "category_overlap": len(set(input_profile[col]["top_5_categories"].keys()) & 
+                                        set(synthetic_profile[col]["top_5_categories"].keys())) / 
+                                    max(len(input_profile[col]["top_5_categories"]), 1),
+                "drift_detected": len(set(input_profile[col]["top_5_categories"].keys()) & 
+                                      set(synthetic_profile[col]["top_5_categories"].keys())) < 3  
+            }
+    
+    return drift_summary
+
+# Function to generate synthetic data using LLaMA 3.1
+def generate_synthetic_data(input_df, prompt_modifier=""):
+    # Convert input schema to a structured prompt
+    column_names = ", ".join(input_df.columns)
+    
+    base_prompt = f"""
+    Generate synthetic tabular data in CSV format based on the following schema:
+    Columns: {column_names}.
+    The generated data should match the statistical properties of the input data.
+    {prompt_modifier}
+    Output only the CSV data.
+    """
+    
+    response = llm.invoke(base_prompt)
+    synthetic_data = response.strip()
+    
+    # Convert LLM output to DataFrame
+    from io import StringIO
+    synthetic_df = pd.read_csv(StringIO(synthetic_data))
+    
+    return synthetic_df
+
+# Load input data
+input_df = pd.read_csv("input_data.csv")  # Replace with actual input file
+
+# Generate input profile
+input_profile = profile_data(input_df)
+
+# Loop until generated data is within acceptable variation
+max_iterations = 5
+iteration = 0
+prompt_modifier = ""
+
+while iteration < max_iterations:
+    print(f"Iteration {iteration + 1}: Generating synthetic data...")
+    
+    # Generate synthetic data
+    synthetic_df = generate_synthetic_data(input_df, prompt_modifier)
+    
+    # Profile synthetic data
+    synthetic_profile = profile_data(synthetic_df)
+    
+    # Compare profiles
+    drift_report = compare_profiles(input_profile, synthetic_profile, input_df, synthetic_df)
+    
+    # Check if any drift is detected
+    drift_detected = any(drift["drift_detected"] for drift in drift_report.values())
+    
+    if not drift_detected:
+        print("Synthetic data matches input data! No drift detected.")
+        break
+    
+    # Modify the prompt based on drift
+    prompt_modifier = "Adjust the statistical properties to better match the input data."
+    
+    iteration += 1
+    time.sleep(2)  # Pause between iterations
+
+# Save final synthetic data
+synthetic_df.to_csv("synthetic_output.csv", index=False)
+print("Final synthetic dataset saved.")
