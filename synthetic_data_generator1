@@ -1,49 +1,65 @@
 import pandas as pd
-import langchain
+from io import StringIO
 from langchain.chat_models import ChatGroq
 from langchain.schema import AIMessage
-from io import StringIO
 
-# Load input data (CSV or XLSX)
-input_file = "input_data.csv"  # Change to your file
-input_df = pd.read_csv(input_file)
+# Load input data
+file_path = "input_data.xlsx"  # Change to your actual file
+df = pd.read_csv(file_path) if file_path.endswith('.csv') else pd.read_excel(file_path)
+
+# Analyze Schema Dynamically
+schema = {}
+for col in df.columns:
+    dtype = str(df[col].dtype)
+    unique_values = df[col].nunique()
+    
+    if dtype == 'object':
+        sample_values = df[col].dropna().unique()[:5].tolist()
+        schema[col] = {"type": "categorical", "samples": sample_values}
+    elif dtype in ['int64', 'float64']:
+        schema[col] = {
+            "type": "numeric",
+            "min": df[col].min(),
+            "max": df[col].max(),
+            "mean": df[col].mean(),
+            "std": df[col].std()
+        }
+
+print("Schema Analysis Completed:", schema)
 
 # Initialize LLM (Groq with LLaMA 3.1)
 llm = ChatGroq(model="llama3-70b-8192", temperature=0.7, api_key="your_groq_api_key")
 
-# Get column names for prompt
-column_names = ", ".join(input_df.columns)
-
-# Generate synthetic data until it matches input properties
+# Dynamically construct prompt based on schema
 while True:
-    # Create prompt for LLM
-    prompt = f"""
-    Generate synthetic tabular data in CSV format based on the following schema:
-    Columns: {column_names}.
-    The generated data should match the statistical properties (mean, standard deviation, unique values, distribution) of the input data.
-    Ensure no data drift occurs.
-    Output only the CSV data.
-    """
+    prompt = "Generate synthetic tabular data in CSV format based on the following schema:\n\n"
+
+    for col, details in schema.items():
+        if details["type"] == "categorical":
+            prompt += f"- {col}: Categorical, sample values: {details['samples']}\n"
+        elif details["type"] == "numeric":
+            prompt += (f"- {col}: Numeric, Range: ({details['min']} to {details['max']}), "
+                       f"Mean: {details['mean']}, Std Dev: {details['std']}\n")
+
+    prompt += "\nEnsure the synthetic data statistically matches the input dataset. Output only CSV data."
 
     # Invoke LLM
     response = llm.invoke(prompt)
 
-    # Extract content from AIMessage
+    # Extract LLM output and convert to DataFrame
     synthetic_data = response.content.strip()
-
-    # Convert LLM output to DataFrame
     synthetic_df = pd.read_csv(StringIO(synthetic_data))
 
     # Compute drift by comparing input and generated data
-    input_profile = input_df.describe(include="all")
+    input_profile = df.describe(include="all")
     synthetic_profile = synthetic_df.describe(include="all")
 
     drift_detected = False
 
-    for col in input_df.columns:
+    for col in df.columns:
         if col in synthetic_df.columns:
             # Compare mean, std for numerical columns
-            if input_df[col].dtype in ['int64', 'float64'] and synthetic_df[col].dtype in ['int64', 'float64']:
+            if df[col].dtype in ['int64', 'float64'] and synthetic_df[col].dtype in ['int64', 'float64']:
                 mean_diff = abs(input_profile.loc['mean', col] - synthetic_profile.loc['mean', col])
                 std_diff = abs(input_profile.loc['std', col] - synthetic_profile.loc['std', col])
                 
@@ -52,7 +68,7 @@ while True:
                     break
             
             # Compare unique value counts for categorical columns
-            elif input_df[col].dtype == 'object':
+            elif df[col].dtype == 'object':
                 unique_diff = abs(input_profile.loc['unique', col] - synthetic_profile.loc['unique', col])
                 
                 if unique_diff > 0.1 * input_profile.loc['unique', col]:
