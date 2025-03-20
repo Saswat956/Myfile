@@ -1,0 +1,30 @@
+import pandas as pd
+
+# Load the CSV file
+data = pd.read_csv("input.csv")
+
+# Preview the data
+print(data.head())
+
+pip install pandas sdv
+
+
+from sdv.tabular import GaussianCopula
+import pandas as pd
+
+# Load the dataset
+data = pd.read_csv("input.csv")
+
+# Initialize a model for generating synthetic data
+model = GaussianCopula()
+
+# Train the model using your original data
+model.fit(data)
+
+# Generate synthetic data
+synthetic_data = model.sample(100)  # Generate 100 synthetic rows
+
+# Save the synthetic data to a CSV
+synthetic_data.to_csv("synthetic_output.csv", index=False)
+
+print("Synthetic data generated and saved!")
