@@ -1,0 +1,56 @@
+# profiler.py
+import pandas as pd
+import numpy as np
+
+def profile_dataframe(df):
+    """
+    Generates a profile summary of a Pandas DataFrame similar to the displayed table.
+    """
+    summary = []
+    
+    for col in df.columns:
+        col_data = df[col]
+        col_summary = {
+            "column_name": col,
+            "data_type": col_data.dtype,
+            "num_rows": len(col_data),
+            "num_null": col_data.isnull().sum(),
+            "num_spaces": (col_data.astype(str) == ' ').sum() if col_data.dtype == 'O' else 0,
+            "num_blank": (col_data.astype(str) == '').sum() if col_data.dtype == 'O' else 0,
+            "count": col_data.count(),
+            "mean": col_data.mean() if np.issubdtype(col_data.dtype, np.number) else np.nan,
+            "stddev": col_data.std() if np.issubdtype(col_data.dtype, np.number) else np.nan,
+            "min": col_data.min(skipna=True),
+            "max": col_data.max(skipna=True),
+            "num_distinct": col_data.nunique(),
+            "most_freq_value": col_data.mode().iloc[0] if not col_data.mode().empty else np.nan,
+            "most_freq_value_count": col_data.value_counts().iloc[0] if not col_data.value_counts().empty else np.nan,
+            "least_freq_value": col_data.value_counts().idxmin() if not col_data.value_counts().empty else np.nan,
+            "least_freq_value_count": col_data.value_counts().min() if not col_data.value_counts().empty else np.nan
+        }
+        summary.append(col_summary)
+    
+    return pd.DataFrame(summary)
+--------------------------------------------------------------------------------------------
+
+import pandas as pd
+import numpy as np
+import streamlit as st
+from profiler import profile_dataframe
+
+# Streamlit App
+st.title("Pandas DataFrame Profiler")
+
+uploaded_actual = st.file_uploader("Upload Actual Data (CSV)", type=["csv"])
+uploaded_generated = st.file_uploader("Upload Generated Data (CSV)", type=["csv"])
+
+if st.button("Profile Data"):
+    if uploaded_actual is not None:
+        df_actual = pd.read_csv(uploaded_actual)
+        st.subheader("Actual Data Profile")
+        st.dataframe(profile_dataframe(df_actual))
+    
+    if uploaded_generated is not None:
+        df_generated = pd.read_csv(uploaded_generated)
+        st.subheader("Generated Data Profile")
+        st.dataframe(profile_dataframe(df_generated))
