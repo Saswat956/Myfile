@@ -106,3 +106,90 @@ assert np.array_equal(
     predictions_original
 )
 
+search_space = {
+    'n_estimators': scope.int(hp.quniform('n_estimators', 20, 1000, 1)),
+    'learning_rate': hp.loguniform('learning_rate', -3, 0),
+    'max_depth': scope.int(hp.quniform('max_depth', 2, 5, 1)),
+}
+
+def train_model(params):
+    # Enable autologging on each worker
+    mlflow.autolog()
+
+    with mlflow.start_run(nested=True):
+        model_hp = sklearn.ensemble.GradientBoostingClassifier(
+            random_state=0,
+            **params
+        )
+
+        model_hp.fit(X_train, y_train)
+
+        predicted_probs = model_hp.predict_proba(X_test)
+        roc_auc = sklearn.metrics.roc_auc_score(
+            y_test,
+            predicted_probs[:, 1]
+        )
+
+        mlflow.log_metric('test_auc', roc_auc)
+
+        return {
+            'status': STATUS_OK,
+            'loss': -1 * roc_auc
+        }
+
+spark_trials = SparkTrials(
+    parallelism=1
+)
+
+with mlflow.start_run(run_name='gb_hyperopt') as run:
+    best_params = fmin(
+        fn=train_model,
+        space=search_space,
+        algo=tpe.suggest,
+        max_evals=2,
+        trials=spark_trials
+    )
+
+best_run = mlflow.search_runs(
+    order_by=["metrics.test_auc DESC", "start_time DESC"],
+    max_results=10,
+).iloc[0]
+
+print("Best Run")
+print("AUC: {}".format(best_run["metrics.test_auc"]))
+print("Num Estimators: {}".format(best_run["params.n_estimators"]))
+print("Max Depth: {}".format(best_run["params.max_depth"]))
+print("Learning Rate: {}".format(best_run["params.learning_rate"]))
+
+best_model_pyfunc = mlflow.pyfunc.load_model(
+    "runs:/{run_id}/model".format(
+        run_id=best_run.run_id
+    )
+)
+
+best_model_predictions = X_test
+best_model_predictions["prediction"] = best_model_pyfunc.predict(X_test)
+
+predictions_table = f"{CATALOG_NAME}.{SCHEMA_NAME}.predictions"
+
+spark.sql(f"DROP TABLE IF EXISTS {predictions_table}")
+
+results = spark.createDataFrame(best_model_predictions)
+
+# Write results back to Unity Catalog from Python
+results.write.saveAsTable(
+    f"{CATALOG_NAME}.{SCHEMA_NAME}.predictions"
+)
+
+model_uri = "runs:/{run_id}/model".format(
+    run_id=best_run.run_id
+)
+
+mlflow.register_model(
+    model_uri,
+    f"{CATALOG_NAME}.{SCHEMA_NAME}.wine_model"
+)
+
+
+
+
