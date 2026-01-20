@@ -1,0 +1,237 @@
+#Imports
+
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.catalog import OnlineTableSpec
+
+#Read raw wine dataset & prepare features
+raw_data = spark.read.load(
+    "/databricks-datasets/wine-quality/winequality-red.csv",
+    format="csv",
+    sep=";",
+    inferSchema="true",
+    header="true"
+)
+
+new_df = raw_data.withColumn("wine_id", monotonically_increasing_id())
+
+new_df = new_df.select(
+    "wine_id",
+    "sulphates",
+    "pH",
+    "density",
+    "quality"
+)
+
+def renameColumns(df):
+    renamed_df = df
+    for column in df.columns:
+        renamed_df = renamed_df.withColumnRenamed(column, column.replace(' ', '_'))
+    return renamed_df
+
+renamed_df = renameColumns(new_df)
+
+features_df = renamed_df.drop("quality")
+display(features_df)
+
+#Create catalog & schema
+
+%sql
+USE CATALOG praveendbxeastus;
+CREATE SCHEMA IF NOT EXISTS wine_db;
+USE SCHEMA wine_db;
+
+
+ #Inspect schema
+features_df.schema
+
+#Create Feature Table
+
+from databricks.feature_engineering import FeatureEngineeringClient
+
+fe = FeatureEngineeringClient()
+
+fe.create_table(
+    name="wine_features",
+    primary_keys=["wine_id"],
+    df=features_df,
+    schema=features_df.schema,
+    description="wine features"
+)
+
+
+#Update feature table 
+
+# to update the feature table with the fresh data available
+# fe.write_table(
+#     name="wine_features",
+#     df=features_df,
+#     mode="merge"
+# )
+
+#Read from existing Feature Table
+
+# to read from feature table which already exists
+wine_features_df = fe.read_table(
+    name="praveendbxeastus.wine_db.wine_features"
+)
+
+#Display features
+
+wine_features_df.display(5)
+
+#Create Feature Function (SQL + Python UDF)
+%sql
+CREATE OR REPLACE FUNCTION praveendbxeastus.wine_db.avg_acidity(
+  fixed_acidity FLOAT,
+  volatile_acidity FLOAT,
+  citric_acid FLOAT
+)
+RETURNS FLOAT
+LANGUAGE PYTHON
+COMMENT "Extract AVG values of acidity columns"
+AS $$
+def avg_acidity(fixed_acidity: float, volatile_acidity: float, citric_acid: float):
+    avg = (fixed_acidity + volatile_acidity + citric_acid) / 3
+    return avg
+
+return avg_acidity(fixed_acidity, volatile_acidity, citric_acid)
+$$;
+
+#Read another dataset for feature function usage
+
+winedata = spark.read.load(
+    "/Volumes/praveendbxeastus/ml_schema/data/WineQT.csv",
+    format="csv",
+    inferSchema="true",
+    header="true"
+)
+
+df = winedata.withColumn("wine_id", monotonically_increasing_id())
+
+def renameColumns(df):
+    renamed_df = df
+    for column in df.columns:
+        renamed_df = renamed_df.withColumnRenamed(column, column.replace(' ', '_'))
+    return renamed_df
+
+finaldf = renameColumns(df).drop("sulphates", "pH", "density")
+
+#Cast columns required for Feature Function
+
+from pyspark.sql.functions import col
+
+finaldf = (
+    finaldf
+    .withColumn("fixed_acidity", col("fixed_acidity").cast("float"))
+    .withColumn("volatile_acidity", col("volatile_acidity").cast("float"))
+    .withColumn("citric_acid", col("citric_acid").cast("float"))
+)
+
+#Define Feature Lookups + Feature Function
+from databricks.feature_engineering import FeatureLookup, FeatureFunction
+
+model_feature_lookups = [
+    FeatureLookup(
+        table_name="praveendbxeastus.wine_db.wine_features",
+        lookup_key="wine_id",
+        feature_names=["sulphates", "pH", "density"],
+        rename_outputs={
+            "sulphates": "sulphates",
+            "pH": "ph",
+            "density": "density"
+        }
+    ),
+
+    FeatureFunction(
+        udf_name="praveendbxeastus.wine_db.avg_acidity",
+        output_name="acidity_avg",
+        input_bindings={
+            "fixed_acidity": "fixed_acidity",
+            "volatile_acidity": "volatile_acidity",
+            "citric_acid": "citric_acid"
+        }
+    )
+]
+
+#Create Training Set
+training_set = fe.create_training_set(
+    df=finaldf,
+    feature_lookups=model_feature_lookups,
+    label="quality",
+    exclude_columns=["wine_id", "Id"]
+)
+
+#Load training data
+
+training_pd = training_set.load_df().toPandas()
+
+X = training_pd.drop("quality", axis=1)
+y = training_pd["quality"]
+
+#Train-test split
+from sklearn.model_selection import train_test_split
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+#Feature Function (SQL UDF)
+%sql
+CREATE OR REPLACE FUNCTION praveendbxeastus.wine_db.avg_acidity(
+  fixed_acidity FLOAT,
+  volatile_acidity FLOAT,
+  citric_acid FLOAT
+)
+RETURNS FLOAT
+LANGUAGE PYTHON
+COMMENT "Extract AVG values of acidity columns"
+AS $$
+def avg_acidity(fixed_acidity: float, volatile_acidity: float, citric_acid: float):
+    avg = (fixed_acidity + volatile_acidity + citric_acid) / 3
+    return avg
+
+return avg_acidity(fixed_acidity, volatile_acidity, citric_acid)
+$$;
+
+#Train model + log with Feature Store
+import mlflow
+from mlflow.tracking.client import MlflowClient
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score
+
+mlflow.set_registry_uri("databricks-uc")
+
+model_name = "praveendbxeastus.wine_db.wine_model"
+client = MlflowClient()
+
+with mlflow.start_run():
+    rf = RandomForestRegressor(
+        max_depth=3,
+        n_estimators=20,
+        random_state=42
+    )
+
+    rf.fit(X_train, y_train)
+    y_pred = rf.predict(X_test)
+
+    mlflow.log_metric("test_mse", mean_squared_error(y_test, y_pred))
+    mlflow.log_metric("test_r2_score", r2_score(y_test, y_pred))
+
+    fe.log_model(
+        model=rf,
+        artifact_path="wine_quality_prediction",
+        flavor=mlflow.sklearn,
+        training_set=training_set,
+        registered_model_name=model_name
+    )
+
+#Batch Scoring using Feature Store
+latest_model_version = 1
+
+predictions_df = fe.score_batch(
+    model_uri=f"models:/{model_name}/{latest_model_version}",
+    df=finaldf
+)
+
+display(predictions_df)
+
