@@ -1,0 +1,225 @@
+import mlflow
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.datasets import load_iris
+from sklearn.model_selection import train_test_split
+import pandas as pd
+
+
+
+iris = load_iris()
+
+data = pd.DataFrame(
+    iris["data"],
+    columns=["sepal_length", "sepal_width", "petal_length", "petal_width"]
+)
+
+target = pd.DataFrame(
+    iris["target"],
+    columns=["target"]
+)
+
+data.display()
+
+target.display()
+
+hyperparameters = {
+    "n_estimators": 20,
+    "max_depth": 10,
+    "min_samples_split": 2,
+    "min_samples_leaf": 1,
+    "random_state": 42
+}
+
+X_train, X_test, y_train, y_test = train_test_split(
+    data,
+    target,
+    test_size=0.2,
+    random_state=42
+)
+
+USE CATALOG praveendbxastus;
+USE SCHEMA ml_schema;
+
+from sklearn.metrics import accuracy_score, f1_score
+from sklearn.ensemble import RandomForestClassifier
+import mlflow
+import mlflow.sklearn
+
+mlflow.set_registry_uri("databricks-uc")
+
+with mlflow.start_run(run_name="random_forest_classifier") as run:
+    model = RandomForestClassifier(**hyperparameters)
+    model.fit(X_train, y_train.values.ravel())
+
+    y_pred = model.predict(X_test)
+
+    accuracy = accuracy_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred, average="weighted")
+
+    mlflow.log_params(hyperparameters)
+    mlflow.log_metric("accuracy", accuracy)
+    mlflow.log_metric("f1_score", f1)
+
+    input_example = X_train.iloc[:1]
+
+    mlflow.sklearn.log_model(
+        sk_model=model,
+        artifact_path="random_forest_model",
+        registered_model_name="praveendbxastus.ml_schema.random_forest_classifier",
+        input_example=input_example
+    )
+
+run_id = run.info.run_id
+
+mlflow.sklearn.log_model(
+    model,
+    "random_forest_classifier-2",
+    pip_requirements=["scikit-learn", "numpy"]
+)
+
+API_ROOT = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
+API_TOKEN = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+
+
+import mlflow
+from mlflow.deployments import get_deploy_client
+
+mlflow.set_registry_uri("databricks-uc")
+client = get_deploy_client("databricks")
+
+endpoint = client.create_endpoint(
+    name="random_forest_classifier-endpoint",
+    config={
+        "served_entities": [
+            {
+                "entity_name": "praveendbxastus.ml_schema.random_forest_classifier",
+                "entity_version": "1",
+                "workload_size": "Small",
+                "scale_to_zero_enabled": True
+            }
+        ],
+        "traffic_config": {
+            "routes": [
+                {
+                    "served_model_name": "random_forest_classifier-1",
+                    "traffic_percentage": 100
+                }
+            ]
+        },
+        "auto_capture_config": {
+            "catalog_name": "praveendbxastus",
+            "schema_name": "ml_schema",
+            "table_name_prefix": "rand_forest_payload"
+        }
+    }
+)
+
+import requests
+
+data = {
+    "name": "random_forest_classifier-endpoint",
+    "config": {
+        "served_entities": [
+            {
+                "entity_name": "random_forest_classifier",
+                "entity_version": 1,
+                "workload_size": "Small",
+                "scale_to_zero_enabled": "true",
+                "workload_type": "CPU"
+            }
+        ]
+    }
+}
+
+headers = {
+    "Content-Type": "text/json",
+    "Authorization": f"Bearer {API_TOKEN}"
+}
+
+response = requests.post(
+    url=f"{API_ROOT}/api/2.0/serving-endpoints",
+    json=data,
+    headers=headers
+)
+
+response.json()
+
+import mlflow.deployments
+import os
+
+# Set environment variables
+os.environ["DATABRICKS_HOST"] = API_ROOT
+os.environ["DATABRICKS_TOKEN"] = API_TOKEN
+
+# Get deploy client
+client = mlflow.deployments.get_deploy_client("databricks")
+
+# Call endpoint
+response = client.predict(
+    endpoint="random_forest_classifier-endpoint-us",
+    inputs={
+        "dataframe_split": {
+            "index": [0, 1],
+            "columns": [
+                "sepal_length",
+                "sepal_width",
+                "petal_length",
+                "petal_width"
+            ],
+            "data": [
+                [5.1, 3.5, 1.4, 0.2],
+                [4.9, 3.0, 1.4, 0.2]
+            ]
+        }
+    }
+)
+
+print(response)
+
+import json
+import requests
+
+data = {
+    "dataframe_split": {
+        "index": [0, 1],
+        "columns": [
+            "sepal_length",
+            "sepal_width",
+            "petal_length",
+            "petal_width"
+        ],
+        "data": [
+            [5.1, 3.5, 1.4, 0.2],
+            [4.9, 3.0, 1.4, 0.2]
+        ]
+    }
+}
+
+headers = {
+    "Content-Type": "application/json",
+    "Authorization": f"Bearer {API_TOKEN}"
+}
+
+response = requests.post(
+    url=f"{API_ROOT}/serving-endpoints/random_forest_classifier-endpoint-ui/invocations",
+    json=data,
+    headers=headers
+)
+
+print(json.dumps(response.json(), indent=2))
+
+
+%sql
+SELECT
+  text,
+  ai_query(
+    "random_forest_classifier-endpoint-ui",
+    text,
+    returnType => "STRUCT<label: STRING, score: DOUBLE>"
+  ) AS predict
+FROM (
+    SELECT array(5.1, 3.5, 1.4, 0.2) AS text
+)
+
+
+
