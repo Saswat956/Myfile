@@ -1,0 +1,78 @@
+#Prepare Dataset (Notebook)
+from sklearn.datasets import load_breast_cancer
+import pandas as pd
+
+data = load_breast_cancer(as_frame=True)
+pdf = data.frame
+pdf["target"] = data.target
+
+spark_df = spark.createDataFrame(pdf)
+display(spark_df)
+
+spark_df.write.mode("overwrite").saveAsTable("automl_breast_cancer")
+
+#Import AutoML (Databricks-native)
+from databricks import automl
+
+#Train/Test Split (Still Spark)
+train_df, test_df = spark_df.randomSplit([0.8, 0.2], seed=42)
+
+#Run AutoML Classification (Core Step)
+automl_summary = automl.classify(
+    dataset=train_df,
+    target_col="target",
+    primary_metric="f1",
+    timeout_minutes=30
+)
+#Inspect AutoML Results
+automl_summary
+
+#Verify That ≥2 Models Were Trained (MLflow)
+import mlflow
+
+experiment_id = automl_summary.experiment.experiment_id
+
+runs = mlflow.search_runs(
+    experiment_ids=[experiment_id]
+)
+
+display(runs[["run_id", "metrics.f1", "tags.estimator_name"]])
+
+#Load & Evaluate Best AutoML Model
+best_run_id = automl_summary.best_trial.mlflow_run_id
+model_uri = f"runs:/{best_run_id}/model"
+
+best_model = mlflow.pyfunc.load_model(model_uri)
+
+#Evaluate on Hold-out Test Data
+test_pd = test_df.toPandas()
+
+predictions = best_model.predict(test_pd)
+predictions[:5]
+
+predictions.columns
+
+#Explainability (AutoML Style)
+client = mlflow.tracking.MlflowClient()
+
+artifacts = client.list_artifacts(best_run_id)
+artifacts
+
+#PART 5: Register Best AutoML Model
+mlflow.register_model(
+    model_uri=model_uri,
+    name="BreastCancer_AutoML_Classifier"
+)
+from mlflow.tracking import MlflowClient
+
+client = MlflowClient()
+client.transition_model_version_stage(
+    name="BreastCancer_AutoML_Classifier",
+    version=1,
+    stage="Production",
+    archive_existing_versions=True
+)
+
+
+
+
