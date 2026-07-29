@@ -1,0 +1,56 @@
+Risk Adjustment Coding Opportunity Identification Platform
+
+Business Problem US Medicare Advantage insurers are reimbursed based on
+members’ documented risk profile. Chronic conditions are captured
+through ICD-10 diagnosis codes which map to CMS Hierarchical Condition
+Categories (HCCs). When a chronic condition is clinically present but
+not documented on a claim, the payer loses appropriate risk adjustment
+revenue. The objective is to identify encounters with potential missing
+HCC diagnoses for coder review.
+
+Population - Medicare Advantage members - 24 months historical claims
+and clinical data - Prediction at encounter level - Human coder
+validates all recommendations
+
+Data Sources 1. Medical Claims: Claim ID, Member ID, Provider ID,
+ICD-10, CPT, DOS, POS, Paid Amount, Allowed Amount. 2. EHR Notes: SOAP
+notes, assessment, plan, physician notes. 3. Problem List: Persistent
+chronic conditions. 4. Lab Results: HbA1c, eGFR, Creatinine, BNP, LDL
+etc. 5. Medication History: Drug classes indicating chronic disease. 6.
+Historical Diagnoses: Prior ICD-10 and HCC history. 7. Provider Master:
+Specialty, organization, audit history, coding accuracy. 8. Member
+Profile: Demographics, RAF, enrollment, utilization.
+
+Feature Engineering - Previous HCC count - RAF score - Diagnosis
+persistence - Medication-diagnosis consistency - Lab abnormality
+indicators - Provider coding history - Specialty visit counts - ER,
+inpatient and outpatient utilization - Procedure-diagnosis consistency -
+Chronic disease burden - Claim frequency
+
+Target Label Target = 1 if retrospective review or subsequent validated
+encounter confirms an HCC diagnosis opportunity that was missing in the
+current encounter; otherwise 0.
+
+Model CatBoost/XGBoost binary classifier. Output: - Missing HCC
+probability - Risk category
+
+Explainability SHAP identifies drivers such as: - Prior CHF diagnosis -
+Elevated BNP - Lasix prescription - Cardiology visit - Historical HCC
+
+Post Model Analysis - Provider-wise coding opportunity rate -
+Specialty-wise trends - Region-wise trends - Financial impact
+estimation - HCC-wise opportunity analysis - False positive review -
+Drift monitoring - Fairness monitoring
+
+AI Layer The LLM never predicts diagnoses. It consumes: - Model
+probability - SHAP values - Clinical notes - Lab summaries - Medication
+history
+
+It generates: - Coder-ready clinical summary - Evidence supporting
+suspected missing HCC - Supporting citations from patient history -
+Suggested review rationale
+
+Business Outcome Improves coding completeness, supports accurate
+Medicare Advantage risk adjustment, prioritizes coder workload, and
+provides transparent evidence while keeping final coding decisions with
+certified medical coders.
